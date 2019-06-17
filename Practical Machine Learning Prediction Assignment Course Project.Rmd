@@ -1,0 +1,163 @@
+---
+title: "Practical Machine Learning Prediction Assignment Course Project"
+author: "Vijay Magati"
+date: "6/16/2019"
+output: html_document
+---
+
+#Introduction
+
+##Background
+
+Using devices such as *Jawbone Up*, *Nike FuelBand*, and *Fitbit* it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.  
+In this project, we will be to use data from accelerometers on the belt, forearm, arm, and dumbell of six participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+##Data Processing
+
+```{r}
+suppressMessages(library(caret))
+suppressMessages(library(dplyr))
+suppressMessages(library(ggplot2))
+suppressMessages(library(rpart.plot)) 
+suppressMessages(library(e1071))
+set.seed(123)
+```
+
+```{r}
+if(!dir.exists('./Data')) {dir.create('./Data')}
+if(!dir.exists('./Figures')) {dir.create('./Figures')}
+if(!file.exists('./Data/pml-training.csv')) {
+fileUrl<- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv'
+download.file(fileUrl, destfile='./Data/pml-training.csv', mode = 'wb')
+}
+if(!file.exists('./Data/pml-testing.csv')) {
+fileUrl<- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv'
+download.file(fileUrl, destfile='./Data/pml-testing.csv', mode = 'wb')
+}
+
+mydata_train <- read.csv("Data/pml-training.csv", na.strings = c("NA", ""))
+mydata_test <- read.csv("Data/pml-testing.csv", na.strings=c("NA", ""))
+dim(mydata_train); dim(mydata_test)
+```
+
+The training and test data sets have 19622 and 20 observations. Both have 160 variables(predictors). Next, let's look at NAs in our data to remove them.
+
+```{r}
+sum(colSums(is.na(mydata_train)) == dim(mydata_train)[1])
+sum(colSums(is.na(mydata_train)) >= 0.95 * dim(mydata_train)[1])
+sum(colSums(!is.na(mydata_train)) == dim(mydata_train)[1])
+```
+There are 60 variables that have no NAs. We consider these predictors. We also omit the first seven variables (related to the ID of persons) which have a minor influence on the outcome "classe". 
+
+```{r}
+NoNA_Var <- which(colSums(!is.na(mydata_train)) == dim(mydata_train)[1])
+mydata_train <- mydata_train %>% select(NoNA_Var) %>% select(-c(1:7))
+mydata_test <- mydata_test %>% select(NoNA_Var) %>% select(-c(1:7))
+```
+
+Let's check variables with very low variance.
+
+```{r}
+nearZeroVar(mydata_train)
+```
+
+No variables with very low variance are found in our train data set. Let's also omit highly correlated variables (over correlation of 0.9).
+
+```{r}
+correlations<-  cor(select(mydata_train,-classe))
+highCorr<-  findCorrelation(correlations, cutoff=  0.9)
+mydata_train<- mydata_train %>% select(-highCorr)
+mydata_test<- mydata_test %>% select(-highCorr)
+```
+
+Most of predictive models are based on predictors' normal distributions. We will now scale our data sets. 
+```{r}
+trans <- preProcess(select(mydata_train, -classe), method = c('center', 'scale', 'BoxCox'))
+mydata_train_trans <- predict(trans, select(mydata_train, -classe))
+mydata_test_trans <- predict(trans, select(mydata_test, -classe))
+```
+
+We also neglect the remaining highly skewed variables. 
+```{r}
+Skew_var <- apply(mydata_train_trans, 2, skewness) > 10
+mydata_train_trans <- mydata_train_trans[!Skew_var]
+mydata_test_trans <- mydata_test_trans[!Skew_var]
+mydata_train_trans <- mydata_train_trans %>% mutate(classe = mydata_train$classe)
+mydata_test_trans <- mydata_test_trans %>% mutate(classe = mydata_test$classe)
+
+dim(mydata_train_trans)
+dim(mydata_test_trans)
+```
+
+We now only have 43 variables from our original dataset.
+
+##Data Split 
+The train data set is split into two parts: a subtrain, to build the predictive model, and avalidation, to check the accuracy. The test data set is used to predict the required outcomes for this project. 
+
+```{r}
+Ind_part <- createDataPartition(y = mydata_train_trans$classe, p=0.8, list=F)
+mydata_sub_train <- mydata_train_trans[Ind_part, ] 
+mydata_valid <- mydata_train_trans[-Ind_part, ]
+
+dim(mydata_sub_train)
+dim(mydata_valid)
+```
+
+The subtrain and validation data sets are split from 80% and 20% of the train data set, respectively. 
+
+##Predictive Models 
+A decision tree model is first created, and then a random forest algorithm, if needed.
+```{r}
+control  <-  trainControl(method= 'cv', number = 5)
+``` 
+
+**Decision Tree**
+```{r,cache=T}
+DT_model <- train(classe ~ ., data = mydata_sub_train, method = 'rpart')
+prediction <- predict(DT_model, mydata_valid)
+confusionMatrix(prediction, mydata_valid$classe)
+```
+
+Plotting of the decision tree:
+
+```{r}
+png('./Figures/unnamed-chunk-13.png', width=800,height=600)
+rpart.plot(DT_model$finalModel, main = "Decision Tree", extra = 102, under = T, faclen = 0, cex = 1, branch = 1, type = 0, fallen.leaves = T)
+dev.off()
+```
+
+![plot of unnamed-chunk-13](./Figures/unnamed-chunk-13.png) 
+
+The low accuracy value of 50% shows that the Decision Tree is a bad classifier for the present study. Let's check with the Random Forest model.
+
+**Random Forest**
+```{r,cache=T}
+RF_model <- train(classe ~ ., data = mydata_sub_train, method = "rf", trControl = control)
+prediction <- predict(RF_model, mydata_valid)
+confusionMatrix(prediction, mydata_valid$classe)
+```
+
+The Random Forest is a better predictive model than the Decision Tree, as seen by the higher accuracy number. Let's now consider the first 30 most important predictors of the Random Forest model (to reduce computing cost).
+```{r,cache=T}
+Imp_vars <- rownames(varImp(RF_model)$importance)[1:30]
+RF_model_2 <- train(classe ~ ., data = mydata_sub_train[c(Imp_vars, 'classe')], method = "rf", trControl = control)
+prediction <- predict(RF_model_2, mydata_valid[c(Imp_vars, 'classe')])
+confusionMatrix(prediction, mydata_valid$classe)
+```
+
+As seen above, we have an accuracy of 0.9875 (in 95% CI: [0.9835, 0.9907]).The out of sample error is 1.25%  which indicates that the Random Forest model is a good classifier to predict outcomes of the test data set.
+
+```{r,cache=T}
+result_1 <- predict(RF_model, mydata_test_trans)
+result_2 <- predict(RF_model_2, mydata_test_trans[c(Imp_vars, 'classe')])
+```
+
+Note that we have similar predictive results with the first important and all predictors:
+```{r}
+identical(result_1,result_2)
+```
+
+With this condition, the required 20 outcomes for this project are the following: 
+```{r}
+result_2
+```
